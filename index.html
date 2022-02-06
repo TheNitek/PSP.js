@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<title>PSP Control</title>
+	<style>
+		body {
+	   font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,"Noto Sans",sans-serif,"Apple Color Emoji","Segoe UI Emoji","Segoe UI Symbol","Noto Color Emoji";
+  	}
+		#display {
+			border-radius: 15px;
+			background: #ECFFDC;
+			margin: 20px;
+			padding: 0;
+			padding-left: 10px;
+			width: 400px;
+			height: 250px;
+		}
+		#limits {
+			width: 100%;
+			height: 100%;
+			padding: 0;
+		}
+		.mainValue {
+			font-size: 48px;
+			padding: 0;
+			vertical-align: sub;
+		}
+		.unit {
+			font-size: 24px;
+			padding: 0;
+			vertical-align: sub;
+		}
+		.limitUnit {
+			font-size: 14px;
+		}
+		#display td:nth-child(1) {
+			width: 25%;
+		}
+		#display td:nth-child(2) {
+			width: 25%;
+		}
+		#display td:nth-child(3) {
+			width: 25%;
+		}
+		#display td:nth-child(4) {
+			width: 25%;
+		}
+		#limits td:nth-child(1) {
+			width: 50%;
+			font-size: 16px;
+			text-align: right;
+			padding-right: 10px;
+		}
+		#limits td:nth-child(2) {
+			width: 50%;
+			padding: 0;
+		}
+		.limit {
+			font-size: 30px;
+		}
+		#remote {
+			font-size: 16px;
+			text-align: center;
+		}
+		#tempOutput {
+			text-align: center;
+		}
+		.active {
+			font-weight: bold;
+			color: black;
+		}
+		.inactive {
+			font-weight: normal;
+			color: lightgray;
+		}
+		.blurred {
+			filter: blur(3px) grayscale(100%);
+  		opacity: 0.6
+		}
+		#voltageInput {
+			width: 50px;
+		}
+	</style>
+</head>
+<body>
+	<p>
+		<button onclick="connect()" class="disconnected">Connect</button>
+		<button onclick="disconnect()" class="connected">Disconnect</button>
+		<button onclick="writeSerial('KOE')" class="connected">On</button>
+		<button onclick="writeSerial('KOD')" class="connected">Off</button>
+	</p>
+	<form onsubmit="setVoltage(document.getElementById('voltageInput').value); return false;">
+		<input type="text" name="voltage" id="voltageInput" value="12.00" class="connected">V
+		<input type="submit" value="Set" class="connected">
+	</form>
+	<table id="display" class="blurred">
+		<colgroup>
+			<col>
+			<col>
+			<col>
+			<col>
+		</colgroup>
+		<tr>
+			<td colspan="2">
+				<span class="mainValue" id="voltage">00.00</span>
+				<span class="unit">V</span>
+			</td>
+			<td rowspan="2" colspan="2">
+				<table id="limits">
+					<tr>
+						<td>V-const</td>
+						<td><span class="limit" id="vLimit">00</span> <span class="limitUnit">V</span></td>
+					</tr>
+					<tr>
+						<td>I-const</td>
+						<td><span class="limit" id="iLimit">0.00</span> <span class="limitUnit">A</span></td>
+					</tr>
+					<tr>
+						<td>P-const</td>
+						<td><span class="limit" id="pLimit">000</span> <span class="limitUnit">W</span></td>
+					</tr>
+				</table>
+			</td>
+		</tr>
+		<tr>
+			<td colspan="2">
+				<span class="mainValue" id="current">0.000</span>
+				<span class="unit">A</span>
+			</td>
+		</tr>
+		<tr>
+			<td colspan="2">
+				<span class="mainValue" id="power">000.0</span>
+				<span class="unit">W</span>
+			</td>
+			<td></td>
+			<td rowspan="2" id="tempOutput">
+				<div id="overtemp">Overtemp</div>
+				<div>Output</div>
+				<div><span id="outputOn">On</span> <span id="outputOff">Off</span></div>
+			</td>
+		</tr>
+		<tr>
+			<td id="remote">remote</td>
+			<td id="locked">locked</td>
+			<td>&nbsp;</td>
+		</tr>
+	</table>
+	<script type="text/javascript">
+		if (window.isSecureContext) {
+			console.log("Secure!");
+		} else {
+			console.log("No secure context. Everything else will fail");
+		}
+
+		let port;
+		let status;
+		let refreshInterval;
+
+		navigator.serial.addEventListener('connect', event => {
+			console.log("Connect event", event);
+		});
+
+		function connect() {
+			navigator.serial.requestPort({ filters: []}).then((new_port) => {
+					port = new_port;
+					console.log(port);
+					port.open({baudRate: 9600}).then(() => {
+						document.querySelectorAll('.connected').forEach(element => {
+							element.disabled = false;
+						});
+						document.querySelectorAll('.disconnected').forEach(element => {
+							element.disabled = true;
+						});
+						// Delay first query a bit, but don't wait the full 5 seconds
+						setTimeout(() => {writeSerial('L'); readSerial();}, 1000);
+						// Reload data every 5 seconds
+						refreshInterval = setInterval(() => {writeSerial('L'); readSerial();}, 5000);
+						console.log("Connected");
+				}).catch((e) => {
+					alert('Could not connect: ' + e);
+				});
+			});
+		}
+
+		function disconnect() {
+			document.getElementById('display').classList.add('blurred');
+			if(port) {
+				if(refreshInterval) {
+					clearInterval(refreshInterval);
+				}
+				port.close().then(() => {
+					console.log("Disconnected");
+					document.querySelectorAll('.connected').forEach(element => {
+						element.disabled = true;
+					});
+					document.querySelectorAll('.disconnected').forEach(element => {
+						element.disabled = false;
+					});
+					port = null;
+				});
+			}
+		}
+
+		async function writeSerial(cmd) {
+			const encoder = new TextEncoder();
+			const writer = port.writable.getWriter();
+			await writer.write(encoder.encode(cmd + '\r'));
+			writer.releaseLock();
+			console.log("Sent " + cmd);
+		}
+
+		async function readSerial() {
+			if(port.readable) {
+				try {
+					const reader = port.readable.getReader();
+					const decoder = new TextDecoder();
+					let response = '';
+					try {
+						while(!response.endsWith('\r\n')) {
+							const { value, done } = await reader.read();
+							if (done) {
+								console.log("done");
+								return;
+							}
+							response += decoder.decode(value);
+						}
+						parseResponse(response.trim());
+					} catch (error) {
+						console.log(error);
+					} finally {
+						reader.releaseLock();
+					}
+				} catch (error) {
+					console.log(error);
+				}
+			} else {
+				console.log("not readable");
+			}
+		}
+
+		function parseResponse(response) {
+			console.log(response, response.length);
+			if(response.length == 37) {
+				status = {
+            voltage: response.substring(1,6),
+            current: response.substring(7,12),
+            power: response.substring(13,18),
+            voltage_limit: (response.substring(19,21)),
+            current_limit: (response.substring(22,26)),
+            power_limit: (response.substring(27,30)),
+            output: response.charAt(31) == '1',
+            overtemp: response.charAt(32) == '1',
+            fine_control: response.charAt(33) == '1',
+            wheel_locked: response.charAt(34) == '1',
+            remote: response.charAt(35) == '1',
+            locked: response.charAt(36) == '1' 
+				}
+				document.getElementById('voltage').innerText = status.voltage;
+				document.getElementById('current').innerText = status.current;
+				document.getElementById('power').innerText = status.power;
+				document.getElementById('vLimit').innerText = status.voltage_limit;
+				document.getElementById('iLimit').innerText = status.current_limit;
+				document.getElementById('pLimit').innerText = status.power_limit;
+				document.getElementById('remote').classList.add(status.remote ? 'active' : 'inactive');
+				document.getElementById('remote').classList.remove(status.remote ? 'inactive' : 'active');
+				document.getElementById('locked').classList.add(status.locked ? 'active' : 'inactive');
+				document.getElementById('locked').classList.remove(status.locked ? 'inactive' : 'active');
+				document.getElementById('overtemp').classList.add(status.overtemp ? 'active' : 'inactive');
+				document.getElementById('overtemp').classList.remove(status.overtemp ? 'inactive' : 'active');
+				document.getElementById('outputOn').classList.add(status.output ? 'active' : 'inactive');
+				document.getElementById('outputOn').classList.remove(status.output ? 'inactive' : 'active');
+				document.getElementById('outputOff').classList.add(status.output ? 'inactive' : 'active');
+				document.getElementById('outputOff').classList.remove(status.output ? 'active' : 'inactive');
+				document.getElementById('display').classList.remove('blurred');
+				console.log(status);
+				return;
+			} else {
+				alert('Unknown response: ' + response.length);
+			}
+		}
+
+		function setVoltage(voltage) {
+			const voltageRegExp = /^[0-9]{2}\.[0-9]{2}$/;
+			console.log(voltage);
+			if(!voltageRegExp.test(voltage)) {
+				alert('Voltage has to be in format xx.xx!');
+				return;
+			}
+			writeSerial('SV ' + voltage);
+		}
+
+		document.querySelectorAll('.connected').forEach(element => {
+			element.disabled = true;
+		});
+	</script>
+</body>
+</html>
