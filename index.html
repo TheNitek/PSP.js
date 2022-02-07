@@ -165,7 +165,7 @@
 			navigator.serial.requestPort({ filters: []}).then((new_port) => {
 					port = new_port;
 					console.log(port);
-					port.open({baudRate: 9600}).then(() => {
+					port.open({baudRate: 2400}).then(() => {
 						document.querySelectorAll('.connected').forEach(element => {
 							element.disabled = false;
 						});
