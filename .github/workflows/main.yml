@@ -16,10 +16,14 @@ jobs:
     - uses: actions/checkout@v4
     - name: Setup Github Page
       uses: actions/configure-pages@v5
+    - name: Copy html
+      run: |
+        mkdir ${{ runner.temp }}/pages
+        cp ./index.html ${{ runner.temp }}/pages
     - name: Upload html
       uses: actions/upload-pages-artifact@v3
       with:
-        path: ./index.html
+        path: ${{ runner.temp }}/pages
 
   deploy:
     needs: build
