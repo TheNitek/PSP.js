@@ -86,8 +86,8 @@
 	<p>
 		<button onclick="connect()" class="disconnected">Connect</button>
 		<button onclick="disconnect()" class="connected">Disconnect</button>
-		<button onclick="writeSerial('KOE')" class="connected">On</button>
-		<button onclick="writeSerial('KOD')" class="connected">Off</button>
+		<button onclick="writeSerial(new Uint8Array([0x01, 0x06, 0x00, 0x09, 0x00, 0x01]))" class="connected">On</button>
+		<button onclick="writeSerial(new Uint8Array([0x01, 0x06, 0x00, 0x09, 0x00, 0x00]))" class="connected">Off</button>
 	</p>
 	<form onsubmit="setVoltage(document.getElementById('voltageInput').value); return false;">
 		<input type="text" name="voltage" id="voltageInput" value="12.00" class="connected">V
@@ -153,6 +153,7 @@
 			console.log("No secure context. Everything else will fail");
 		}
 
+		const statusMsg = new Uint8Array([0x01, 0x03, 0x00, 0x00, 0x00, 0x0D]);
 		let port;
 		let status;
 		let refreshInterval;
@@ -165,7 +166,7 @@
 			navigator.serial.requestPort({ filters: []}).then((new_port) => {
 					port = new_port;
 					console.log(port);
-					port.open({baudRate: 2400}).then(() => {
+					port.open({baudRate: 9600}).then(() => {
 						document.querySelectorAll('.connected').forEach(element => {
 							element.disabled = false;
 						});
@@ -173,14 +174,41 @@
 							element.disabled = true;
 						});
 						// Delay first query a bit, but don't wait the full 5 seconds
-						setTimeout(() => {writeSerial('L'); readSerial();}, 1000);
+						setTimeout(() => {writeSerial(statusMsg);}, 1000);
 						// Reload data every 5 seconds
-						refreshInterval = setInterval(() => {writeSerial('L'); readSerial();}, 5000);
+						refreshInterval = setInterval(() => {writeSerial(statusMsg);}, 5000);
 						console.log("Connected");
 				}).catch((e) => {
 					alert('Could not connect: ' + e);
 				});
 			});
+		}
+		
+		function crc16(buffer) {
+			var crc = 0xFFFF;
+			var odd;
+
+			for (var i = 0; i < buffer.length; i++) {
+				crc = crc ^ buffer[i]; // XOR byte into least sig. byte of crc
+
+				for (var j = 0; j < 8; j++) { // Loop over each bit
+					odd = crc & 0x0001;
+					crc = crc >> 1; // Shift right
+					if (odd) {
+						crc = crc ^ 0xA001; // If LSB is set XOR 0xA001
+					}
+				}
+			}
+
+			return crc;
+		}
+		
+		function hexString(data) {
+			return Array.from(data).map((i) => i.toString(16).padStart(2, '0')).join('');
+		}
+		
+		function toInt16(h, l) {
+			return (h << 8) | l;
 		}
 
 		function disconnect() {
@@ -202,30 +230,83 @@
 			}
 		}
 
-		async function writeSerial(cmd) {
-			const encoder = new TextEncoder();
+		async function writeSerial(data) {
+			const crc = crc16(data);
+			const msg = new Uint8Array(data.length + 2);
+			msg.set(data);
+			msg.set([(crc & 0xFF), (crc >> 8)], data.length);
 			const writer = port.writable.getWriter();
-			await writer.write(encoder.encode(cmd + '\r'));
+			await writer.write(msg);
 			writer.releaseLock();
-			console.log("Sent " + cmd);
+			console.log("Sent " + hexString(msg));
+			readSerial();
 		}
 
 		async function readSerial() {
 			if(port.readable) {
 				try {
 					const reader = port.readable.getReader();
-					const decoder = new TextDecoder();
-					let response = '';
+					let header = new Uint8Array(3); // deviceId, function code, response length
+					let hBytes = 3;
+					let msg = undefined;
+					let mBytes = 0;
 					try {
-						while(!response.endsWith('\r\n')) {
+						while(hBytes > 0) {
 							const { value, done } = await reader.read();
 							if (done) {
-								console.log("done");
+								console.log("reader closed ...");
 								return;
 							}
-							response += decoder.decode(value);
+							if(value.length < hBytes) {
+								header.set(value, 3-hBytes);
+								hBytes -= value.length;
+							} else {
+								header.set(value.slice(0, hBytes), 3-hBytes);
+								if(header[1] == 0x03) {
+									mBytes = header[2] + 2;
+								} else if(header[1] == 0x06) {
+									mBytes = 6;
+									hBytes--; // No length field
+								} else {
+									console.log('Unsupported function code: '  + header[1].toString(16));
+								}
+								msg = new Uint8Array(mBytes);
+								//console.log(hexString(value), hBytes, mBytes);
+								msg.set(value.slice(hBytes, hBytes+mBytes));
+								mBytes -= value.length-hBytes;
+								break;
+							}
 						}
-						parseResponse(response.trim());
+						
+						console.log("Response length: " + header[2]);
+						
+						while(mBytes > 0) {
+							const { value, done } = await reader.read();
+							if (done) {
+								console.log("reader closed ...");
+								return;
+							}
+							msg.set(value, header[2] - mBytes);
+							mBytes -= value.length;
+						}
+						
+						if(header[0] != 0x01) {
+							console.log("Ignoring message for deviceId: " + header[0].toString(16));
+						}
+						
+						if(header[1] == 0x03) {
+							let fullMsg = new Uint8Array(msg.length + 1);
+							fullMsg.set(header);
+							fullMsg.set(msg.slice(0, msg.length-2), 3);
+							const crc = crc16(fullMsg);
+							if((crc & 0xFF) != msg[msg.length-2] || (crc >> 8) != msg[msg.length-1]) {
+								console.log('CRC mismatch! Expected: ' + (crc & 0xFF).toString(16) + (crc >> 8).toString(16) + ' Got: ' + msg[msg.length-2].toString(16) + msg[msg.length-1].toString(16));
+								return;
+							}
+							parseResponse(msg);
+						} else if(header[1] == 0x06) {
+							writeSerial(statusMsg);
+						}
 					} catch (error) {
 						console.log(error);
 					} finally {
@@ -240,21 +321,21 @@
 		}
 
 		function parseResponse(response) {
-			console.log(response, response.length);
-			if(response.length == 37) {
+			console.log(hexString(response), response.length);
+			if(response.length == 28) {
 				status = {
-            voltage: response.substring(1,6),
-            current: response.substring(7,12),
-            power: response.substring(13,18),
-            voltage_limit: (response.substring(19,21)),
-            current_limit: (response.substring(22,26)),
-            power_limit: (response.substring(27,30)),
-            output: response.charAt(31) == '1',
-            overtemp: response.charAt(32) == '1',
-            fine_control: response.charAt(33) == '1',
-            wheel_locked: response.charAt(34) == '1',
-            remote: response.charAt(35) == '1',
-            locked: response.charAt(36) == '1' 
+            voltage: toInt16(response[4], response[5]) / 100.0,
+            current: toInt16(response[6], response[7]) / 1000.0,
+            power: toInt16(response[8], response[9]) / 100.0,
+            voltage_limit: toInt16(response[0], response[1]) / 100.0,
+            current_limit: toInt16(response[2], response[3]) / 1000.0,
+            power_limit: 0,
+            output: toInt16(response[18], response[19]),
+            overtemp: 0,
+            fine_control: 0,
+            wheel_locked: 0,
+            remote: 0,
+            locked: toInt16(response[12], response[13])
 				}
 				document.getElementById('voltage').innerText = status.voltage;
 				document.getElementById('current').innerText = status.current;
@@ -287,9 +368,9 @@
 				alert('Voltage has to be in format xx.xx!');
 				return;
 			}
-			writeSerial('SV ' + voltage);
+			
+			writeSerial(new Uint8Array([0x01, 0x06, 0x00, 0x00, voltage*100 >> 8, voltage*100 & 0XFF]));
 		}
-
 		document.querySelectorAll('.connected').forEach(element => {
 			element.disabled = true;
 		});
