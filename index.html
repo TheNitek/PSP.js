@@ -4,8 +4,8 @@
 	<title>PSP Control</title>
 	<style>
 		body {
-	   font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,"Noto Sans",sans-serif,"Apple Color Emoji","Segoe UI Emoji","Segoe UI Symbol","Noto Color Emoji";
-  	}
+			font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,"Noto Sans",sans-serif,"Apple Color Emoji","Segoe UI Emoji","Segoe UI Symbol","Noto Color Emoji";
+		}
 		#display {
 			border-radius: 15px;
 			background: #ECFFDC;
@@ -80,16 +80,25 @@
 		#voltageInput {
 			width: 50px;
 		}
+		#psuForm {
+			margin-bottom: 30px;
+		}
 	</style>
 </head>
 <body>
+	<form onsubmit="return false;" id="psuForm">
+		<select name="psu" id="psu" onchange="window.location.hash = '#' + this.value; location.reload();">
+			<option value="PSP">PSP</option>
+			<option value="DPS">DPS</option>
+		</select>
+	</form>
 	<p>
-		<button onclick="connect()" class="disconnected">Connect</button>
-		<button onclick="disconnect()" class="connected">Disconnect</button>
-		<button onclick="writeSerial('KOE')" class="connected">On</button>
-		<button onclick="writeSerial('KOD')" class="connected">Off</button>
+		<button onclick="psu.connect()" class="disconnected">Connect</button>
+		<button onclick="psu.disconnect()" class="connected">Disconnect</button>
+		<button onclick="psu.powerOn()" class="connected">On</button>
+		<button onclick="psu.powerOff();" class="connected">Off</button>
 	</p>
-	<form onsubmit="setVoltage(document.getElementById('voltageInput').value); return false;">
+	<form onsubmit="psu.setVoltage(document.getElementById('voltageInput').value); return false;">
 		<input type="text" name="voltage" id="voltageInput" value="12.00" class="connected">V
 		<input type="submit" value="Set" class="connected">
 	</form>
@@ -147,115 +156,73 @@
 		</tr>
 	</table>
 	<script type="text/javascript">
+		if(!window.location.hash) {
+		  window.location.hash = '#PSP';
+		}
+		
+		let hash = window.location.hash.substring(1);
+		document.getElementById('psu').value = hash;
+	
 		if (window.isSecureContext) {
 			console.log("Secure!");
 		} else {
 			console.log("No secure context. Everything else will fail");
 		}
 
-		let port;
-		let status;
-		let refreshInterval;
+		class PSU {
+			port;
+			refreshInterval;
+			baudRate;
+			
+			constructor(baudRate) {
+				this.baudRate = baudRate;
+			}
+			
+			// Abstract
+			writeVoltage(voltage) {}
+		
+			connect() {
+				navigator.serial.requestPort({ filters: []}).then((new_port) => {
+						this.port = new_port;
+						console.log(this.port);
+						this.port.open({baudRate: this.baudRate}).then(() => {
+							document.querySelectorAll('.connected').forEach(element => {
+								element.disabled = false;
+							});
+							document.querySelectorAll('.disconnected').forEach(element => {
+								element.disabled = true;
+							});
+							// Delay first query a bit, but don't wait the full 5 seconds
+							setTimeout(() => {this.requestStatus();}, 1000);
+							// Reload data every 5 seconds
+							this.refreshInterval = setInterval(() => {this.requestStatus();}, 5000);
+							console.log("Connected");
+					}).catch((e) => {
+						alert('Could not connect: ' + e);
+					});
+				});
+			}
 
-		navigator.serial.addEventListener('connect', event => {
-			console.log("Connect event", event);
-		});
-
-		function connect() {
-			navigator.serial.requestPort({ filters: []}).then((new_port) => {
-					port = new_port;
-					console.log(port);
-					port.open({baudRate: 2400}).then(() => {
+			disconnect() {
+				document.getElementById('display').classList.add('blurred');
+				if(this.port) {
+					if(this.refreshInterval) {
+						clearInterval(this.refreshInterval);
+					}
+					this.port.close().then(() => {
+						console.log("Disconnected");
 						document.querySelectorAll('.connected').forEach(element => {
-							element.disabled = false;
-						});
-						document.querySelectorAll('.disconnected').forEach(element => {
 							element.disabled = true;
 						});
-						// Delay first query a bit, but don't wait the full 5 seconds
-						setTimeout(() => {writeSerial('L'); readSerial();}, 1000);
-						// Reload data every 5 seconds
-						refreshInterval = setInterval(() => {writeSerial('L'); readSerial();}, 5000);
-						console.log("Connected");
-				}).catch((e) => {
-					alert('Could not connect: ' + e);
-				});
-			});
-		}
-
-		function disconnect() {
-			document.getElementById('display').classList.add('blurred');
-			if(port) {
-				if(refreshInterval) {
-					clearInterval(refreshInterval);
-				}
-				port.close().then(() => {
-					console.log("Disconnected");
-					document.querySelectorAll('.connected').forEach(element => {
-						element.disabled = true;
+						document.querySelectorAll('.disconnected').forEach(element => {
+							element.disabled = false;
+						});
+						this.port = null;
 					});
-					document.querySelectorAll('.disconnected').forEach(element => {
-						element.disabled = false;
-					});
-					port = null;
-				});
-			}
-		}
-
-		async function writeSerial(cmd) {
-			const encoder = new TextEncoder();
-			const writer = port.writable.getWriter();
-			await writer.write(encoder.encode(cmd + '\r'));
-			writer.releaseLock();
-			console.log("Sent " + cmd);
-		}
-
-		async function readSerial() {
-			if(port.readable) {
-				try {
-					const reader = port.readable.getReader();
-					const decoder = new TextDecoder();
-					let response = '';
-					try {
-						while(!response.endsWith('\r\n')) {
-							const { value, done } = await reader.read();
-							if (done) {
-								console.log("done");
-								return;
-							}
-							response += decoder.decode(value);
-						}
-						parseResponse(response.trim());
-					} catch (error) {
-						console.log(error);
-					} finally {
-						reader.releaseLock();
-					}
-				} catch (error) {
-					console.log(error);
 				}
-			} else {
-				console.log("not readable");
 			}
-		}
-
-		function parseResponse(response) {
-			console.log(response, response.length);
-			if(response.length == 37) {
-				status = {
-            voltage: response.substring(1,6),
-            current: response.substring(7,12),
-            power: response.substring(13,18),
-            voltage_limit: (response.substring(19,21)),
-            current_limit: (response.substring(22,26)),
-            power_limit: (response.substring(27,30)),
-            output: response.charAt(31) == '1',
-            overtemp: response.charAt(32) == '1',
-            fine_control: response.charAt(33) == '1',
-            wheel_locked: response.charAt(34) == '1',
-            remote: response.charAt(35) == '1',
-            locked: response.charAt(36) == '1' 
-				}
+			
+			updateUI(status) {
 				document.getElementById('voltage').innerText = status.voltage;
 				document.getElementById('current').innerText = status.current;
 				document.getElementById('power').innerText = status.power;
@@ -274,22 +241,276 @@
 				document.getElementById('outputOff').classList.remove(status.output ? 'active' : 'inactive');
 				document.getElementById('display').classList.remove('blurred');
 				console.log(status);
-				return;
-			} else {
-				alert('Unknown response: ' + response.length);
+			}
+
+			setVoltage(voltage) {
+				const voltageRegExp = /^[0-9]{2}\.[0-9]{2}$/;
+				console.log(voltage);
+				if(!voltageRegExp.test(voltage)) {
+					alert('Voltage has to be in format xx.xx!');
+					return;
+				}
+				this.writeVoltage(voltage);
+			}
+			
+		}
+		
+		class DPS extends PSU {
+			constructor() {
+				super(9600);
+			}
+		
+			crc16(buffer) {
+				var crc = 0xFFFF;
+				var odd;
+
+				for (var i = 0; i < buffer.length; i++) {
+					crc = crc ^ buffer[i]; // XOR byte into least sig. byte of crc
+
+					for (var j = 0; j < 8; j++) { // Loop over each bit
+						odd = crc & 0x0001;
+						crc = crc >> 1; // Shift right
+						if (odd) {
+							crc = crc ^ 0xA001; // If LSB is set XOR 0xA001
+						}
+					}
+				}
+
+				return crc;
+			}
+			
+			hexString(data) {
+				return Array.from(data).map((i) => i.toString(16).padStart(2, '0')).join('');
+			}
+			
+			toInt16(h, l) {
+				return (h << 8) | l;
+			}
+
+			async writeSerial(data) {
+				const crc = this.crc16(data);
+				const msg = new Uint8Array(data.length + 2);
+				msg.set(data);
+				msg.set([(crc & 0xFF), (crc >> 8)], data.length);
+				const writer = this.port.writable.getWriter();
+				await writer.write(msg);
+				writer.releaseLock();
+				console.log("Sent " + this.hexString(msg));
+				this.readSerial();
+			}
+
+			async readSerial() {
+				if(this.port.readable) {
+					try {
+						const reader = this.port.readable.getReader();
+						let header = new Uint8Array(3); // deviceId, function code, response length
+						let hBytes = 3;
+						let msg = undefined;
+						let mBytes = 0;
+						try {
+							while(hBytes > 0) {
+								const { value, done } = await reader.read();
+								if (done) {
+									console.log("reader closed ...");
+									return;
+								}
+								if(value.length < hBytes) {
+									header.set(value, 3-hBytes);
+									hBytes -= value.length;
+								} else {
+									header.set(value.slice(0, hBytes), 3-hBytes);
+									if(header[1] == 0x03) {
+										mBytes = header[2] + 2;
+									} else if(header[1] == 0x06) {
+										mBytes = 6;
+										hBytes--; // No length field
+									} else {
+										console.log('Unsupported function code: '  + header[1].toString(16));
+									}
+									msg = new Uint8Array(mBytes);
+									//console.log(this.hexString(value), hBytes, mBytes);
+									msg.set(value.slice(hBytes, hBytes+mBytes));
+									mBytes -= value.length-hBytes;
+									break;
+								}
+							}
+							
+							console.log("Response length: " + header[2]);
+							
+							while(mBytes > 0) {
+								const { value, done } = await reader.read();
+								if (done) {
+									console.log("reader closed ...");
+									return;
+								}
+								msg.set(value, header[2] - mBytes);
+								mBytes -= value.length;
+							}
+							
+							if(header[0] != 0x01) {
+								console.log("Ignoring message for deviceId: " + header[0].toString(16));
+							}
+							
+							if(header[1] == 0x03) {
+								let fullMsg = new Uint8Array(msg.length + 1);
+								fullMsg.set(header);
+								fullMsg.set(msg.slice(0, msg.length-2), 3);
+								const crc = this.crc16(fullMsg);
+								if((crc & 0xFF) != msg[msg.length-2] || (crc >> 8) != msg[msg.length-1]) {
+									console.log('CRC mismatch! Expected: ' + (crc & 0xFF).toString(16) + (crc >> 8).toString(16) + ' Got: ' + msg[msg.length-2].toString(16) + msg[msg.length-1].toString(16));
+									return;
+								}
+								this.parseResponse(msg);
+							} else if(header[1] == 0x06) {
+								this.requestStatus();
+							}
+						} catch (error) {
+							console.log(error);
+						} finally {
+							reader.releaseLock();
+						}
+					} catch (error) {
+						console.log(error);
+					}
+				} else {
+					console.log("not readable");
+				}
+			}
+
+			parseResponse(response) {
+				console.log(this.hexString(response), response.length);
+				if(response.length == 28) {
+					let status = {
+						voltage: this.toInt16(response[4], response[5]) / 100.0,
+						current: this.toInt16(response[6], response[7]) / 1000.0,
+						power: this.toInt16(response[8], response[9]) / 100.0,
+						voltage_limit: this.toInt16(response[0], response[1]) / 100.0,
+						current_limit: this.toInt16(response[2], response[3]) / 1000.0,
+						power_limit: 0,
+						output: this.toInt16(response[18], response[19]),
+						overtemp: 0,
+						fine_control: 0,
+						wheel_locked: 0,
+						remote: 0,
+						locked: this.toInt16(response[12], response[13])
+					}
+					this.updateUI(status);
+				} else {
+					alert('Unknown response: ' + response.length);
+				}
+			}
+			
+			requestStatus() {
+				this.writeSerial(new Uint8Array([0x01, 0x03, 0x00, 0x00, 0x00, 0x0D]));
+			}
+			
+			writeVoltage(voltage) {
+				this.writeSerial(new Uint8Array([0x01, 0x06, 0x00, 0x00, voltage*100 >> 8, voltage*100 & 0XFF]));
+			}
+			
+			powerOn() {
+				this.writeSerial(new Uint8Array([0x01, 0x06, 0x00, 0x09, 0x00, 0x01]));
+			}
+			
+			powerOff() {
+				this.writeSerial(new Uint8Array([0x01, 0x06, 0x00, 0x09, 0x00, 0x00]));
+			}
+		}
+		
+		class PSP extends PSU {
+			constructor() {
+				super(2400);
+			}
+			
+			async writeSerial(cmd) {
+				const encoder = new TextEncoder();
+				const writer = this.port.writable.getWriter();
+				await writer.write(encoder.encode(cmd + '\r'));
+				writer.releaseLock();
+				console.log("Sent " + cmd);
+			}
+
+			async readSerial() {
+				if(this.port.readable) {
+					try {
+						const reader = this.port.readable.getReader();
+						const decoder = new TextDecoder();
+						let response = '';
+						try {
+							while(!response.endsWith('\r\n')) {
+								const { value, done } = await reader.read();
+								if (done) {
+									console.log("done");
+									return;
+								}
+								response += decoder.decode(value);
+							}
+							this.parseResponse(response.trim());
+						} catch (error) {
+							console.log(error);
+						} finally {
+							reader.releaseLock();
+						}
+					} catch (error) {
+						console.log(error);
+					}
+				} else {
+					console.log("not readable");
+				}
+			}
+
+			parseResponse(response) {
+				console.log(response, response.length);
+				if(response.length == 37) {
+					let status = {
+						voltage: response.substring(1,6),
+						current: response.substring(7,12),
+						power: response.substring(13,18),
+						voltage_limit: (response.substring(19,21)),
+						current_limit: (response.substring(22,26)),
+						power_limit: (response.substring(27,30)),
+						output: response.charAt(31) == '1',
+						overtemp: response.charAt(32) == '1',
+						fine_control: response.charAt(33) == '1',
+						wheel_locked: response.charAt(34) == '1',
+						remote: response.charAt(35) == '1',
+						locked: response.charAt(36) == '1' 
+					}
+					this.updateUI(status);
+				} else {
+					alert('Unknown response: ' + response.length);
+				}
+			}
+
+			requestStatus() {
+				this.writeSerial('L');
+				this.readSerial();
+			}
+			
+			writeVoltage(voltage) {
+				this.writeSerial('SV ' + voltage);
+			}
+			
+			powerOn() {
+				this.writeSerial('KOE');
+			}
+			
+			powerOff() {
+				this.writeSerial('KOD');
 			}
 		}
 
-		function setVoltage(voltage) {
-			const voltageRegExp = /^[0-9]{2}\.[0-9]{2}$/;
-			console.log(voltage);
-			if(!voltageRegExp.test(voltage)) {
-				alert('Voltage has to be in format xx.xx!');
-				return;
-			}
-			writeSerial('SV ' + voltage);
+		let psu;
+		if(hash.toUpperCase() == 'DPS') {
+			psu = new DPS();
+		} else {
+			psu = new PSP();
 		}
 
+		navigator.serial.addEventListener('connect', event => {
+			console.log("Connect event", event);
+		});
+		
 		document.querySelectorAll('.connected').forEach(element => {
 			element.disabled = true;
 		});
