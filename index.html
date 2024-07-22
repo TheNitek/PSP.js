@@ -90,6 +90,7 @@
 		<select name="psu" id="psu" onchange="window.location.hash = '#' + this.value; location.reload();">
 			<option value="PSP">PSP</option>
 			<option value="DPS">DPS</option>
+			<option value="TOE">TOE</option>
 		</select>
 	</form>
 	<p>
@@ -500,9 +501,96 @@
 			}
 		}
 
+		class TOE extends PSU {
+			constructor() {
+				super(9600);
+				console.log("Toe");
+			}
+			
+			async writeSerial(cmd) {
+				const encoder = new TextEncoder();
+				const writer = this.port.writable.getWriter();
+				await writer.write(encoder.encode(cmd + '\n'));
+				writer.releaseLock();
+				console.log("Sent " + cmd);
+			}
+
+			async readSerial() {
+				if(this.port.readable) {
+					try {
+						const reader = this.port.readable.getReader();
+						const decoder = new TextDecoder();
+						let response = '';
+						try {
+							while(!response.endsWith('\r\n')) {
+								const { value, done } = await reader.read();
+								if (done) {
+									console.log("done");
+									return;
+								}
+								response += decoder.decode(value);
+							}
+							this.parseResponse(response.trim());
+						} catch (error) {
+							console.log(error);
+						} finally {
+							reader.releaseLock();
+						}
+					} catch (error) {
+						console.log(error);
+					}
+				} else {
+					console.log("not readable");
+				}
+			}
+
+			parseResponse(response) {
+				console.log(response, response.length);
+				if(response.length == 43) {
+					let status = {
+						voltage: response.substring(1,6),
+						current: response.substring(8,13),
+						power: response.substring(28,34),
+						voltage_limit: response.substring(15,20),
+						current_limit: (response.substring(22,26)),
+						power_limit: response.substring(35,41),
+						output: response.charAt(42) == '1',
+						overtemp: 0,
+						fine_control: 0,
+						wheel_locked: 0,
+						remote: 0,
+						locked: 0 
+					}
+					this.updateUI(status);
+				} else {
+					alert('Unknown response: ' + response.length);
+				}
+			}
+
+			requestStatus() {
+				this.writeSerial('MV?;MC?;V?;C?;MP?;P?;EX?;');
+				this.readSerial();
+			}
+			
+			writeVoltage(voltage) {
+				this.writeSerial('SEL 1;V ' + voltage );
+			}
+			
+			powerOn() {
+				this.writeSerial('SEL 1;EX 1');
+			}
+			
+			powerOff() {
+				this.writeSerial('SEL 1;EX 0');
+			}
+		}
+
+
 		let psu;
 		if(hash.toUpperCase() == 'DPS') {
 			psu = new DPS();
+		} else if(hash.toUpperCase() == 'TOE') {
+			psu = new TOE();
 		} else {
 			psu = new PSP();
 		}
